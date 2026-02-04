@@ -330,8 +330,22 @@ psa_status_t fwu_bootloader_install_image(const psa_fwu_component_t *candidates,
     /* Write the boot magic in image trailer so that these images will be
      * taken as candidates.
      */
+#define FWU_INSTALL_MAX_RETRIES  3
+#define FWU_INSTALL_RETRY_DELAY_US  1000
+
     for (cand_index = 0; cand_index < number; cand_index++) {
-        if (boot_set_pending_multi(candidates[cand_index], false) != 0) {
+        int pending_rc = -1;
+        for (uint32_t attempt = 0; attempt < FWU_INSTALL_MAX_RETRIES; attempt++) {
+            pending_rc = boot_set_pending_multi(candidates[cand_index], false);
+            if (pending_rc == 0) {
+                break;
+            }
+            if (attempt + 1 < FWU_INSTALL_MAX_RETRIES) {
+                /* Brief delay before retry to allow OSPI bus to settle */
+                for (volatile uint32_t d = 0; d < FWU_INSTALL_RETRY_DELAY_US * 10; d++) {}
+            }
+        }
+        if (pending_rc != 0) {
             /* If failure happens, reject candidates have been installed successfully. */
             for (index_i = 0; index_i < cand_index; index_i++) {
                 if (fwu_bootloader_reject_staged_image(candidates[index_i]) != PSA_SUCCESS) {
