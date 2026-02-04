@@ -242,6 +242,10 @@ static psa_status_t tfm_fwu_install(void)
 #else
             fwu_ctx[component].component_state = PSA_FWU_UPDATED;
 #endif
+        } else if (status == PSA_ERROR_STORAGE_FAILURE) {
+            /* Keep in CANDIDATE state for retry — image data is intact,
+             * only boot magic write failed (transient flash contention).
+             */
         } else if ((status != PSA_SUCCESS_REBOOT) && (status != PSA_SUCCESS_RESTART)) {
             /* Switch to FAILED state on other errors. */
             fwu_ctx[component].component_state = PSA_FWU_FAILED;
