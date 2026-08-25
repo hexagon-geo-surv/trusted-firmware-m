@@ -1843,9 +1843,12 @@ static int ecp_check_pubkey_sw( const mbedtls_ecp_group *grp, const mbedtls_ecp_
 {
     int ret = MBEDTLS_ERR_ERROR_CORRUPTION_DETECTED;
     size_t olen;
-    uint8_t *pt_binary;
+    uint32_t mont_param_words = 0U;
+    uint8_t *pt_binary = NULL;
+    uint32_t *mont_param = NULL;
     PKA_HandleTypeDef hpka = {0};
     PKA_PointCheckInTypeDef ECC_PointCheck = {0};
+    PKA_MontgomeryParamInTypeDef ECC_MontgomeryParam = {0};
 
     /* pt coordinates must be normalized for our checks */
     if( mbedtls_mpi_cmp_int( &pt->MBEDTLS_PRIVATE(X), 0 ) < 0 ||
@@ -1861,10 +1864,6 @@ static int ecp_check_pubkey_sw( const mbedtls_ecp_group *grp, const mbedtls_ecp_
     ECC_PointCheck.coefA       = grp->st_a_abs;
     ECC_PointCheck.coefB       = grp->st_b;
 
-#if defined(GENERATOR_HW_PKA_EXTENDED_API)
-    ECC_PointCheck.pMontgomeryParam = NULL;
-#endif
-
     /* Set HW peripheral input parameter: coordinates of point to check */
     pt_binary = mbedtls_calloc(( 2U * grp->st_modulus_size ) + 1U, sizeof( uint8_t ));
     MBEDTLS_MPI_CHK((pt_binary == NULL) ? MBEDTLS_ERR_ECP_ALLOC_FAILED : 0);
@@ -1874,12 +1873,31 @@ static int ecp_check_pubkey_sw( const mbedtls_ecp_group *grp, const mbedtls_ecp_
     ECC_PointCheck.pointX = pt_binary + 1U;
     ECC_PointCheck.pointY = pt_binary + grp->st_modulus_size + 1U;
 
+    mont_param_words = ( grp->st_modulus_size + 3U ) / 4U;
+
+    mont_param = mbedtls_calloc( mont_param_words, sizeof( uint32_t ));
+    MBEDTLS_MPI_CHK((mont_param == NULL) ? MBEDTLS_ERR_ECP_ALLOC_FAILED : 0);
+
     /* Enable HW peripheral clock */
     __HAL_RCC_PKA_CLK_ENABLE();
 
     /* Initialize HW peripheral */
     hpka.Instance = PKA;
     MBEDTLS_MPI_CHK((HAL_PKA_Init(&hpka) != HAL_OK) ? MBEDTLS_ERR_PLATFORM_HW_ACCEL_FAILED : 0);
+
+    /* Reset PKA RAM */
+    HAL_PKA_RAMReset(&hpka);
+
+    /* The point check operation reads the Montgomery parameter R2 mod p from
+       PKA RAM, so derive it with the peripheral before submitting the point. */
+    ECC_MontgomeryParam.size = grp->st_modulus_size;
+    ECC_MontgomeryParam.pOp1 = grp->st_p;
+
+    MBEDTLS_MPI_CHK((HAL_PKA_MontgomeryParam(&hpka, &ECC_MontgomeryParam, ST_ECP_TIMEOUT) != HAL_OK) ? MBEDTLS_ERR_PLATFORM_HW_ACCEL_FAILED : 0);
+
+    HAL_PKA_MontgomeryParam_GetResult(&hpka, mont_param);
+
+    ECC_PointCheck.pMontgomeryParam = mont_param;
 
     /* Reset PKA RAM */
     HAL_PKA_RAMReset(&hpka);
@@ -1903,6 +1921,12 @@ cleanup:
     {
         mbedtls_platform_zeroize(pt_binary, ( 2U * grp->st_modulus_size ) + 1U );
         mbedtls_free(pt_binary);
+    }
+
+    if (mont_param != NULL)
+    {
+        mbedtls_platform_zeroize(mont_param, mont_param_words * sizeof( uint32_t ));
+        mbedtls_free(mont_param);
     }
 
     return ret;
